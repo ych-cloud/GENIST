@@ -1,0 +1,33 @@
+__pycache__/
+*.py[cod]
+.idea/
+.venv/
+venv/
+.env
+.env.*
+
+# Local data and experiment outputs.
+datasets/
+experiments/
+results/
+outputs/
+logs/
+
+# Large generated files and model weights.
+*.h5ad
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.tif
+*.ome.tif
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.log
+*.safetensors
+*.tar
+*.tar.gz
+*.zip
+*.rar
