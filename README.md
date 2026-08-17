@@ -183,6 +183,8 @@ python evaluate.py ^
   --output-dir experiments/spot/run_000/evaluations/spot_spa123
 ~~~
 
+Spot evaluation reports per-gene PCC and RMSE. The `compute_spot_gene_ssim` helper in `GENIST/evaluation.py` is available for display-only SSIM visualisations and is not part of the reported metrics.
+
 Use python train.py --help, python sample.py --help, and python evaluate.py --help to inspect all model and evaluation options.
 
 ### 2. Single-cell prediction
@@ -355,6 +357,8 @@ python evaluate.py ^
   --slide-name <sample_id> ^
   --output-dir experiments/single_cell/run_000/evaluations/fold_1
 ~~~
+
+Single-cell evaluation reports per-gene CCC. PCC, RMSE and SSIM are not used as single-cell evaluation metrics.
 
 Add use-extra-condition to train.py, sample.py, and evaluate.py only when extra_cond.npy has been generated for the corresponding fold.
 

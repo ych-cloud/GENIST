@@ -10,7 +10,7 @@ import torch
 from skimage.metrics import structural_similarity
 
 from .common import DEFAULT_TOPK_VALUES, build_logger, ensure_directory, normalize_mode, save_arguments, write_json
-from .data import load_ground_truth, resolve_feature_root
+from .data import load_ground_truth
 
 
 SPOT_ID_PATTERN = re.compile(r"(\d+)x(\d+)")
@@ -22,8 +22,38 @@ def safe_corr(x: np.ndarray, y: np.ndarray, eps: float = 1e-8) -> float:
     return float(np.corrcoef(x, y)[0, 1])
 
 
+def concordance_correlation(ground_truth: np.ndarray, prediction: np.ndarray) -> np.ndarray:
+    """Compute Lin's concordance correlation coefficient independently per gene."""
+    ground_truth = np.asarray(ground_truth, dtype=np.float64)
+    prediction = np.asarray(prediction, dtype=np.float64)
+    if ground_truth.ndim != 2 or prediction.shape != ground_truth.shape:
+        raise ValueError(
+            "CCC inputs must have matching shape [N, G]; "
+            f"received {ground_truth.shape} and {prediction.shape}."
+        )
+
+    mean_ground_truth = ground_truth.mean(axis=0)
+    mean_prediction = prediction.mean(axis=0)
+    centered_ground_truth = ground_truth - mean_ground_truth
+    centered_prediction = prediction - mean_prediction
+    variance_ground_truth = np.mean(centered_ground_truth * centered_ground_truth, axis=0)
+    variance_prediction = np.mean(centered_prediction * centered_prediction, axis=0)
+    covariance = np.mean(centered_ground_truth * centered_prediction, axis=0)
+    denominator = (
+        variance_ground_truth
+        + variance_prediction
+        + (mean_ground_truth - mean_prediction) ** 2
+    )
+    return np.divide(
+        2 * covariance,
+        denominator,
+        out=np.zeros_like(covariance),
+        where=denominator > 0,
+    )
+
+
 def safe_ssim_2d(image_a: np.ndarray, image_b: np.ndarray) -> float:
-    """Compute spatial SSIM with the Wang/skimage Gaussian-window settings."""
+    """Compute 2D SSIM for a display-only spatial comparison."""
     image_a = np.asarray(image_a, dtype=np.float64)
     image_b = np.asarray(image_b, dtype=np.float64)
     if image_a.ndim != 2 or image_b.ndim != 2 or image_a.shape != image_b.shape:
@@ -91,97 +121,36 @@ def build_spot_grid(entity_ids: list[str], values: np.ndarray, fill_value: float
     return grid
 
 
-def build_spatial_grid_index(coordinates: np.ndarray, grid_size: int) -> tuple[np.ndarray, tuple[slice, slice]]:
-    coordinates = np.asarray(coordinates, dtype=np.float64)
-    if coordinates.ndim != 2 or coordinates.shape[1] < 2:
-        raise ValueError(f"Single-cell coordinates must have shape [N, 2]; received {coordinates.shape}.")
-    if coordinates.shape[0] < 3 or not np.isfinite(coordinates[:, :2]).all():
-        raise ValueError("Spatial SSIM requires at least three entities with finite coordinates.")
-
-    x_values = coordinates[:, 0]
-    y_values = coordinates[:, 1]
-    x_min, x_max = float(np.min(x_values)), float(np.max(x_values))
-    y_min, y_max = float(np.min(y_values)), float(np.max(y_values))
-    x_span = max(x_max - x_min, 1e-6)
-    y_span = max(y_max - y_min, 1e-6)
-
-    x_index = np.floor((x_values - x_min) / x_span * (grid_size - 1)).astype(np.int32)
-    y_index = np.floor((y_values - y_min) / y_span * (grid_size - 1)).astype(np.int32)
-    x_index = np.clip(x_index, 0, grid_size - 1)
-    y_index = np.clip(y_index, 0, grid_size - 1)
-    flat_index = y_index * grid_size + x_index
-
-    occupancy = np.bincount(flat_index, minlength=grid_size * grid_size).reshape(grid_size, grid_size)
-    occupied_rows = np.where(occupancy.any(axis=1))[0]
-    occupied_columns = np.where(occupancy.any(axis=0))[0]
-    crop = (
-        slice(int(occupied_rows[0]), int(occupied_rows[-1]) + 1),
-        slice(int(occupied_columns[0]), int(occupied_columns[-1]) + 1),
-    )
-    return flat_index, crop
-
-
-def rasterize_gene_to_grid(values: np.ndarray, flat_index: np.ndarray, grid_size: int) -> np.ndarray:
-    values = np.asarray(values)
-    valid = np.isfinite(values)
-    if not np.any(valid):
-        return np.zeros((grid_size, grid_size), dtype=np.float32)
-
-    valid_values = values[valid].astype(np.float64, copy=False)
-    sums = np.bincount(flat_index[valid], weights=valid_values, minlength=grid_size * grid_size)
-    counts = np.bincount(flat_index[valid], minlength=grid_size * grid_size)
-    grid = np.zeros(grid_size * grid_size, dtype=np.float32)
-    occupied = counts > 0
-    grid[occupied] = (sums[occupied] / counts[occupied]).astype(np.float32, copy=False)
-    return grid.reshape(grid_size, grid_size)
-
-
-def compute_gene_ssim(
-    args,
+def compute_spot_gene_ssim(
     entity_ids: list[str],
     ground_truth: np.ndarray,
     prediction: np.ndarray,
 ) -> np.ndarray:
-    num_entities, num_genes = ground_truth.shape
+    """Compute per-gene SSIM for spot grids for visualisation only.
+
+    This helper is intentionally not called by the main evaluation entry point.
+    SSIM is not part of the reported spot PCC/RMSE or single-cell CCC metrics.
+    """
+    ground_truth = np.asarray(ground_truth, dtype=np.float64)
+    prediction = np.asarray(prediction, dtype=np.float64)
+    if ground_truth.ndim != 2 or prediction.shape != ground_truth.shape:
+        raise ValueError(
+            "Spot SSIM inputs must have matching shape [N, G]; "
+            f"received {ground_truth.shape} and {prediction.shape}."
+        )
+
+    _, num_genes = ground_truth.shape
     gene_ssim = np.full(num_genes, np.nan, dtype=np.float64)
-
-    if args.mode == "spot":
-        for gene_index in range(num_genes):
-            gt_values = ground_truth[:, gene_index]
-            pred_values = prediction[:, gene_index]
-            fill_value = float(min(np.min(gt_values), np.min(pred_values)))
-            gt_grid = build_spot_grid(entity_ids, gt_values, fill_value)
-            pred_grid = build_spot_grid(entity_ids, pred_values, fill_value)
-            gene_ssim[gene_index] = safe_ssim_2d(gt_grid, pred_grid)
-        return gene_ssim
-
-    processed_dir = resolve_feature_root(args.data_path, args.feature_root)
-    default_coordinates_path = processed_dir / f"fold_{args.fold}" / args.split / "coords.npy"
-    coordinates_path = (args.coords_file or default_coordinates_path).expanduser().resolve()
-    if not coordinates_path.exists():
-        raise FileNotFoundError(
-            "Spatial SSIM requires single-cell coordinates. "
-            f"Missing coordinate file: {coordinates_path}"
-        )
-    coordinates = np.load(coordinates_path)
-    if coordinates.ndim != 2 or coordinates.shape[1] < 2:
-        raise ValueError(
-            f"Single-cell coordinates must have shape [N, 2]; received {coordinates.shape}."
-        )
-    if coordinates.shape[0] != num_entities:
-        raise ValueError(
-            "Coordinate rows do not match evaluation entities: "
-            f"{coordinates.shape[0]} vs {num_entities}."
-        )
-
-    valid_coordinates = np.isfinite(coordinates[:, :2]).all(axis=1)
-    coordinates = coordinates[valid_coordinates]
-    ground_truth = ground_truth[valid_coordinates]
-    prediction = prediction[valid_coordinates]
-    flat_index, crop = build_spatial_grid_index(coordinates, args.ssim_grid_size)
     for gene_index in range(num_genes):
-        gt_grid = rasterize_gene_to_grid(ground_truth[:, gene_index], flat_index, args.ssim_grid_size)[crop]
-        pred_grid = rasterize_gene_to_grid(prediction[:, gene_index], flat_index, args.ssim_grid_size)[crop]
+        gt_values = ground_truth[:, gene_index]
+        pred_values = prediction[:, gene_index]
+        finite_values = np.concatenate([gt_values, pred_values])
+        finite_values = finite_values[np.isfinite(finite_values)]
+        if finite_values.size == 0:
+            continue
+        fill_value = float(np.min(finite_values))
+        gt_grid = build_spot_grid(entity_ids, gt_values, fill_value)
+        pred_grid = build_spot_grid(entity_ids, pred_values, fill_value)
         gene_ssim[gene_index] = safe_ssim_2d(gt_grid, pred_grid)
     return gene_ssim
 
@@ -254,9 +223,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gene-order-file", "--gene-list", "--gene_list_filename", dest="gene_list", type=str, default=None, help="Ordered gene file filename or path.")
     parser.add_argument("--output-dir", type=Path, default=None, help="Directory where evaluation artefacts are stored.")
     parser.add_argument("--samples-per-condition", type=int, default=0, help="Optional override for repetitions per condition.")
-    parser.add_argument("--top-k", nargs="+", type=int, default=list(DEFAULT_TOPK_VALUES), help="Top-k PCC cutoffs.")
-    parser.add_argument("--coords-file", type=Path, default=None, help="Optional single-cell coordinate .npy override.")
-    parser.add_argument("--ssim-grid-size", type=int, default=128, help="Single-cell raster size used for spatial SSIM.")
+    parser.add_argument(
+        "--top-k",
+        nargs="+",
+        type=int,
+        default=list(DEFAULT_TOPK_VALUES),
+        help="Spot-mode top-k PCC cutoffs; ignored in single-cell mode.",
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
 
     parser.add_argument("--slide-out", "--slide_out", dest="slide_out", type=str, default="", help="Held-out spot slide for spot mode.")
@@ -294,8 +267,6 @@ def maybe_save_histogram(
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     args.mode = normalize_mode(args.mode)
-    if args.ssim_grid_size < 16:
-        raise ValueError("--ssim-grid-size must be at least 16.")
 
     output_dir = ensure_directory(args.output_dir or default_output_dir(args.sample_file))
     logger = build_logger(output_dir, args.verbose, log_filename="evaluation.log")
@@ -315,18 +286,6 @@ def main(argv: list[str] | None = None) -> None:
 
     ground_truth_matrix = ground_truth.matrix.astype(np.float64)
     prediction_matrix = prediction_mean.astype(np.float64)
-    gene_pcc = np.array(
-        [safe_corr(ground_truth_matrix[:, gene_index], prediction_matrix[:, gene_index]) for gene_index in range(num_genes)],
-        dtype=np.float64,
-    )
-    gene_rmse = np.sqrt(np.mean((ground_truth_matrix - prediction_matrix) ** 2, axis=0))
-    gene_ssim = compute_gene_ssim(
-        args=args,
-        entity_ids=ground_truth.entity_ids,
-        ground_truth=ground_truth_matrix,
-        prediction=prediction_matrix,
-    )
-
     pred_variance = np.var(prediction_matrix, axis=0)
     gt_variance = np.var(ground_truth_matrix, axis=0)
 
@@ -336,31 +295,82 @@ def main(argv: list[str] | None = None) -> None:
         "num_entities": int(num_entities),
         "num_genes": int(num_genes),
         "samples_per_condition": int(repetitions),
-        "ssim_dimension": "2d_spatial",
-        "ssim_grid_size": int(args.ssim_grid_size) if args.mode == "single_cell" else None,
-        "pcc_mean": finite_mean(gene_pcc),
-        "pcc_median": finite_median(gene_pcc),
-        "rmse_mean": finite_mean(gene_rmse),
-        "rmse_median": finite_median(gene_rmse),
-        "ssim_mean": finite_mean(gene_ssim),
-        "ssim_median": finite_median(gene_ssim),
-        "num_valid_pcc_genes": int(np.isfinite(gene_pcc).sum()),
-        "num_valid_rmse_genes": int(np.isfinite(gene_rmse).sum()),
-        "num_valid_ssim_genes": int(np.isfinite(gene_ssim).sum()),
+        "primary_metrics": "gene_level_pcc_rmse" if args.mode == "spot" else "gene_level_ccc",
     }
-    for top_k in sorted(set(args.top_k)):
-        metrics[f"pcc_top_{top_k}"] = topk_mean_desc(gene_pcc, top_k)
 
-    gene_metrics_frame = pd.DataFrame(
-        {
-            "gene": ground_truth.gene_names,
-            "pcc": gene_pcc,
-            "rmse": gene_rmse,
-            "ssim": gene_ssim,
-            "gt_var": gt_variance,
-            "pred_var": pred_variance,
-        }
-    ).sort_values(by=["pcc", "gene"], ascending=[False, True])
+    if args.mode == "spot":
+        gene_pcc = np.array(
+            [
+                safe_corr(ground_truth_matrix[:, gene_index], prediction_matrix[:, gene_index])
+                for gene_index in range(num_genes)
+            ],
+            dtype=np.float64,
+        )
+        gene_rmse = np.sqrt(np.mean((ground_truth_matrix - prediction_matrix) ** 2, axis=0))
+        metrics.update(
+            {
+                "pcc_mean": finite_mean(gene_pcc),
+                "pcc_median": finite_median(gene_pcc),
+                "rmse_mean": finite_mean(gene_rmse),
+                "rmse_median": finite_median(gene_rmse),
+                "num_valid_pcc_genes": int(np.isfinite(gene_pcc).sum()),
+                "num_valid_rmse_genes": int(np.isfinite(gene_rmse).sum()),
+            }
+        )
+        for top_k in sorted(set(args.top_k)):
+            metrics[f"pcc_top_{top_k}"] = topk_mean_desc(gene_pcc, top_k)
+
+        gene_metrics_frame = pd.DataFrame(
+            {
+                "gene": ground_truth.gene_names,
+                "pcc": gene_pcc,
+                "rmse": gene_rmse,
+                "gt_var": gt_variance,
+                "pred_var": pred_variance,
+            }
+        ).sort_values(by=["pcc", "gene"], ascending=[False, True])
+        histogram_specs = [
+            (
+                gene_pcc,
+                "gene_pcc_distribution.png",
+                "Pearson correlation",
+                "GENIST gene-wise PCC distribution",
+            ),
+            (
+                gene_rmse,
+                "gene_rmse_distribution.png",
+                "RMSE",
+                "GENIST gene-wise RMSE distribution",
+            ),
+        ]
+        top_genes_filename = "top_pcc_genes.csv"
+    else:
+        gene_ccc = concordance_correlation(ground_truth_matrix, prediction_matrix)
+        metrics.update(
+            {
+                "ccc_mean": finite_mean(gene_ccc),
+                "ccc_median": finite_median(gene_ccc),
+                "num_valid_ccc_genes": int(np.isfinite(gene_ccc).sum()),
+            }
+        )
+        gene_metrics_frame = pd.DataFrame(
+            {
+                "gene": ground_truth.gene_names,
+                "ccc": gene_ccc,
+                "gt_var": gt_variance,
+                "pred_var": pred_variance,
+            }
+        ).sort_values(by=["ccc", "gene"], ascending=[False, True])
+        histogram_specs = [
+            (
+                gene_ccc,
+                "gene_ccc_distribution.png",
+                "Concordance correlation coefficient",
+                "GENIST gene-wise CCC distribution",
+            ),
+        ]
+        top_genes_filename = "top_ccc_genes.csv"
+
     gene_metrics_frame.to_csv(output_dir / "gene_level_metrics.csv", index=False, encoding="utf-8-sig")
 
     zero_gt_frame = gene_metrics_frame.loc[gene_metrics_frame["gt_var"] <= 1e-8]
@@ -371,42 +381,20 @@ def main(argv: list[str] | None = None) -> None:
         zero_pred_frame.to_csv(output_dir / "zero_variance_prediction_genes.csv", index=False, encoding="utf-8-sig")
 
     gene_metrics_frame.head(min(10, len(gene_metrics_frame))).to_csv(
-        output_dir / "top_pcc_genes.csv",
+        output_dir / top_genes_filename,
         index=False,
         encoding="utf-8-sig",
     )
 
-    maybe_save_histogram(
-        gene_pcc,
-        output_dir / "gene_pcc_distribution.png",
-        xlabel="Pearson correlation",
-        title="GENIST gene-wise PCC distribution",
-    )
-    maybe_save_histogram(
-        gene_rmse,
-        output_dir / "gene_rmse_distribution.png",
-        xlabel="RMSE",
-        title="GENIST gene-wise RMSE distribution",
-    )
-    maybe_save_histogram(
-        gene_ssim,
-        output_dir / "gene_ssim_distribution.png",
-        xlabel="SSIM",
-        title="GENIST gene-wise SSIM distribution",
-    )
+    for values, filename, xlabel, title in histogram_specs:
+        maybe_save_histogram(values, output_dir / filename, xlabel=xlabel, title=title)
+
     write_json(output_dir / "summary_metrics.json", metrics)
     save_arguments(output_dir / "evaluation_config.json", args, extra={"output_dir": str(output_dir)})
 
     logger.info("Evaluation complete. Key metrics:")
     for key, value in metrics.items():
-        if key.startswith("pcc_top_") or key in {
-            "pcc_mean",
-            "pcc_median",
-            "rmse_mean",
-            "rmse_median",
-            "ssim_mean",
-            "ssim_median",
-        }:
+        if key.startswith("pcc_top_") or key.endswith(("_mean", "_median")):
             logger.info("%s = %.6f", key, value)
 
 
