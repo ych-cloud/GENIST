@@ -1,16 +1,22 @@
 # GENIST
 
-GENIST is a conditional gene-expression generation framework for spatial transcriptomics spots and single cells. It uses histology-derived representations and a gene-regulatory-network ordering prior to model spatial gene expression.
+## Predicting comprehensive spatial gene expression landscapes from H&E images using gene network context
 
 ![GENIST overview](figures/fig1.png)
 
-This repository contains the model code, dataset-preparation scripts, and the commands used to reproduce the spot-level and single-cell experiments.
+GENIST is a conditional generative framework for predicting spatial gene expression from H&E images. It uses histology-derived representations together with gene-network context and supports both spot-level and single-cell experiments.
 
-## Requirements
+This repository contains the model code, data-preparation scripts and commands used to reproduce the experiments reported in the paper.
+
+The codebase for this study is publicly available at [https://github.com/ych-cloud/GENIST](https://github.com/ych-cloud/GENIST).
+
+## System requirements
+
+The code was developed for a CUDA-enabled Python environment. The supplied environment uses PyTorch 2.3.1, torchvision 0.18.1 and CUDA 11.8. The package list does not record the Python interpreter version; Python 3.10 is used in the example below.
+
+## Installation
 
 Run all commands from the repository root.
-
-The supplied package list does not record the Python interpreter version. Use the same Python minor version as the source environment; the command below keeps the repository's existing Python 3.10 example.
 
 ~~~bash
 conda create -n genist python=3.10
@@ -54,9 +60,13 @@ requirements.txt                     Runtime dependencies
 
 The data and experiment directories are intentionally kept out of version control. Create them locally using the layouts below.
 
-## Spot-level prediction: HER2ST
+## Usage
 
-### 1. Download HEST-1k data
+The workflow has two experimental settings: spot-level prediction on HER2ST and single-cell prediction on Xenium data.
+
+### 1. Spot-level prediction: HER2ST
+
+#### 1. Download HEST-1k data
 
 Set a Hugging Face token if the selected HEST components require authentication.
 
@@ -78,7 +88,7 @@ Use the dry-run option before a large download:
 python spot_datasets_processing/download_hest1k.py --subset her2st --components wsis st --output-dir datasets/her2st --dry-run
 ~~~
 
-### 2. Select and order genes
+#### 2. Select and order genes
 
 The following command selects the top 200 genes from the HER2ST training data. Change the value of target-genes when running another gene setting.
 
@@ -103,7 +113,7 @@ python Gene_Order/gene_order_filtered.py ^
   --output datasets/her2st/derived_features/genes_ordered_top200_regnetwork.txt
 ~~~
 
-### 3. Extract spot image embeddings
+#### 3. Extract spot image embeddings
 
 UNI and CONCH are selectable with the encoders option. The example below extracts both embeddings.
 
@@ -128,7 +138,7 @@ python spot_datasets_processing/extract_her2st_embeddings.py ^
   --device cuda:0
 ~~~
 
-### 4. Train, sample, and evaluate
+#### 4. Train, sample, and evaluate
 
 The training entry point automatically creates sequential run directories under experiments/spot.
 
@@ -175,7 +185,7 @@ python evaluate.py ^
 
 Use python train.py --help, python sample.py --help, and python evaluate.py --help to inspect all model and evaluation options.
 
-## Single-cell prediction
+### 2. Single-cell prediction
 
 The single-cell pipeline follows this order:
 
@@ -202,7 +212,7 @@ datasets/single_cell/<sample_id>/
 
 The following commands are a template. Replace all paths in angle brackets with paths for the selected sample.
 
-### 1. Register H&E to Xenium
+#### 1. Register H&E to Xenium
 
 ~~~bash
 python single_cell_datasets_processing/register_he_insitupy.py ^
@@ -216,7 +226,7 @@ Save or export the registered H&E image as:
 datasets/single_cell/<sample_id>/processed/he_image_registered.tif
 ~~~
 
-### 2. Segment H&E nuclei with HoverNet
+#### 2. Segment H&E nuclei with HoverNet
 
 Run the three steps in order. Step 2 requires a local HoverNet checkout and model weights.
 
@@ -241,7 +251,7 @@ python single_cell_datasets_processing/segment_he_nuclei.py ^
 
 The merge step writes the full-resolution segmentation and a micron-resolution file named he_image_nuclei_seg_microns.tif.
 
-### 3. Build Xenium segmentation and expression matrix
+#### 3. Build Xenium segmentation and expression matrix
 
 ~~~bash
 python single_cell_datasets_processing/build_xenium_nuclei_segmentation.py ^
@@ -258,7 +268,7 @@ python single_cell_datasets_processing/build_xenium_cell_gene_matrix.py ^
   --fp-out-matrix expression_raw.csv
 ~~~
 
-### 4. Match cells and extract patches
+#### 4. Match cells and extract patches
 
 Both segmentation masks must be at the same micron-scale resolution.
 
@@ -279,7 +289,7 @@ python single_cell_datasets_processing/extract_single_cell_patches.py ^
 
 The filtered expression matrix is written to processed/expression_raw_filtered.csv. The patch directory contains patches, masks, and patch_metadata.csv.
 
-### 5. Extract UNI embeddings and build folds
+#### 5. Extract UNI embeddings and build folds
 
 ~~~bash
 python single_cell_datasets_processing/build_uni_embeddings.py ^
@@ -305,7 +315,7 @@ python single_cell_datasets_processing/build_extra_condition.py ^
   --k-neighbors 8
 ~~~
 
-### 6. Train, sample, and evaluate single-cell data
+#### 6. Train, sample, and evaluate single-cell data
 
 ~~~bash
 python train.py ^
@@ -366,7 +376,7 @@ evaluations/<evaluation_name>/
 
 Training runs are created as experiments/spot/run_### or experiments/single_cell/run_###. Each run stores run_config.json, dataset_manifest.json, training.log, checkpoints, predictions, and evaluation outputs.
 
-## Data and model availability
+## Data & model availability
 
 Raw datasets, private pathology images, H&E/Xenium files, pretrained weights, and generated tensors are not redistributed in this repository. Obtain public data from the original sources and place local files under datasets/. Do not commit patient-level or otherwise restricted data.
 
@@ -375,8 +385,10 @@ Raw datasets, private pathology images, H&E/Xenium files, pretrained weights, an
 If you use GENIST, please cite the accompanying paper:
 
 ~~~text
-Citation information will be added after publication.
+GENIST: predicting comprehensive spatial gene expression landscapes from H&E images using gene network context.
 ~~~
+
+Full citation information will be added after publication.
 
 ## License
 
