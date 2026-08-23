@@ -2,7 +2,7 @@
 
 ## Predicting comprehensive spatial gene expression landscapes from H&E images using gene network context
 
-![GENIST overview](figures/fig1.png)
+![GENIST overview](figures/figure1.png)
 
 GENIST is a conditional generative framework for predicting spatial gene expression from H&E images. It uses histology-derived representations together with gene-network context and supports both spot-level and single-cell experiments.
 
